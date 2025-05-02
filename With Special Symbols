@@ -1,0 +1,583 @@
+import time
+import cv2
+import numpy as np
+from gpiozero import OutputDevice, PWMOutputDevice, Button
+from picamera2 import Picamera2
+import os
+
+# GPIO Setup for Motor Driver (L298N)
+IN1 = OutputDevice(17)
+IN2 = OutputDevice(27)
+IN3 = OutputDevice(22)
+IN4 = OutputDevice(23)
+ENA = PWMOutputDevice(18)  # Left motor speed
+ENB = PWMOutputDevice(19)  # Right motor speed
+
+# GPIO Pins for Encoders
+ENC_LEFT = 5
+ENC_RIGHT = 6
+
+# Constants for distance calculation
+PULSES_PER_REVOLUTION = 20  # Adjust based on encoder specifications
+WHEEL_CIRCUMFERENCE = 50.8395  # cm (adjust based on wheel diameter)
+ROBOT_TURN_CIRCUMFERENCE = 150  # cm (adjust based on robot dimensions)
+
+# Pulse counters
+left_pulses = 0
+right_pulses = 0
+total_distance = 0  # Total distance traveled (cm)
+measuring_distance = False  # Flag to control distance measurement
+
+# Create Button objects for encoders
+left_encoder = Button(ENC_LEFT)
+right_encoder = Button(ENC_RIGHT)
+
+# Callback functions for encoder pulses
+def left_encoder_callback():
+    global left_pulses
+    left_pulses += 1
+
+def right_encoder_callback():
+    global right_pulses
+    right_pulses += 1
+
+# Attach callbacks
+left_encoder.when_pressed = left_encoder_callback
+right_encoder.when_pressed = right_encoder_callback
+
+# Distance calculation
+def get_distance(pulses):
+    return (pulses / PULSES_PER_REVOLUTION) * WHEEL_CIRCUMFERENCE / 2
+
+# Reset pulse counters
+def reset_pulses():
+    global left_pulses, right_pulses
+    left_pulses = 0
+    right_pulses = 0
+
+# HSV Color Ranges for Shape Detection
+SHAPE_COLOR_RANGES = {
+    "green": ([40, 70, 70], [80, 255, 255]),
+    "blue": ([90, 50, 50], [130, 255, 255]),
+    "red": ([0, 100, 100], [10, 255, 255], [170, 100, 100], [180, 255, 255]),
+}
+
+# Shape Names for Detection
+SHAPE_NAMES = {3: "Triangle", 5: "Pentagon", 6: "Hexagon"}
+
+# Template Path for Symbol/Arrow Detection
+template_path = "templates"
+known_faces_path = "known_faces"
+os.makedirs(template_path, exist_ok=True)
+os.makedirs(known_faces_path, exist_ok=True)
+
+# Initialize Camera
+picam2 = Picamera2()
+try:
+    config = picam2.create_preview_configuration(main={"size": (160, 120), "format": "RGB888"}, buffer_count=12)
+    picam2.configure(config)
+    picam2.start()
+    print("Camera initialized successfully")
+except Exception as e:
+    print(f"Camera initialization failed: {e}")
+    exit(1)
+
+# Initialize AKAZE for Template Matching
+akaze = cv2.AKAZE_create()
+
+# Motor Control Functions
+def move_forward(distance, duty_cycle):
+    """Move forward a specified distance (cm) at given duty cycle (%)."""
+    global total_distance, measuring_distance
+    reset_pulses()
+    IN1.on()
+    IN2.off()
+    IN3.on()
+    IN4.off()
+    ENA.value = duty_cycle / 100
+    ENB.value = duty_cycle / 100
+
+    start_time = time.time()
+    while get_distance(left_pulses) < distance and get_distance(right_pulses) < distance:
+        time.sleep(0.01)
+
+    elapsed_time = time.time() - start_time
+    avg_distance = (get_distance(left_pulses) + get_distance(right_pulses)) / 2
+    if measuring_distance:
+        total_distance += avg_distance
+    speed = (avg_distance / 100) / elapsed_time if elapsed_time > 0 else 0
+    print(f"Forward - Left: {get_distance(left_pulses)} cm ({left_pulses} pulses), Right: {get_distance(right_pulses)} cm ({right_pulses} pulses)")
+    print(f"Speed: {speed:.2f} m/s, Total Distance: {total_distance:.2f} cm")
+    stop_motor()
+
+def turn_left(angle, duty_cycle):
+    """Turn left by a specified angle (degrees) at given duty cycle (%)."""
+    global total_distance, measuring_distance
+    reset_pulses()
+    IN1.off()
+    IN2.on()
+    IN3.on()
+    IN4.off()
+    ENA.value = duty_cycle / 100
+    ENB.value = duty_cycle / 100
+
+    target_distance = (angle / 360) * ROBOT_TURN_CIRCUMFERENCE
+    target_pulses = (target_distance / WHEEL_CIRCUMFERENCE) * PULSES_PER_REVOLUTION
+    while left_pulses < target_pulses and right_pulses < target_pulses:
+        time.sleep(0.01)
+
+    avg_distance = (get_distance(left_pulses) + get_distance(right_pulses)) / 2
+    if measuring_distance:
+        total_distance += avg_distance
+    print(f"Turn Left - Left: {get_distance(left_pulses)} cm ({left_pulses} pulses), Right: {get_distance(right_pulses)} cm ({right_pulses} pulses)")
+    print(f"Total Distance: {total_distance:.2f} cm")
+    stop_motor()
+
+def turn_right(angle, duty_cycle):
+    """Turn right by a specified angle (degrees) at given duty cycle (%)."""
+    global total_distance, measuring_distance
+    reset_pulses()
+    IN1.on()
+    IN2.off()
+    IN3.off()
+    IN4.on()
+    ENA.value = duty_cycle / 100
+    ENB.value = duty_cycle / 100
+
+    target_distance = (angle / 360) * ROBOT_TURN_CIRCUMFERENCE
+    target_pulses = (target_distance / WHEEL_CIRCUMFERENCE) * PULSES_PER_REVOLUTION
+    while left_pulses < target_pulses and right_pulses < target_pulses:
+        time.sleep(0.01)
+
+    avg_distance = (get_distance(left_pulses) + get_distance(right_pulses)) / 2
+    if measuring_distance:
+        total_distance += avg_distance
+    print(f"Turn Right - Left: {get_distance(left_pulses)} cm ({left_pulses} pulses), Right: {get_distance(right_pulses)} cm ({right_pulses} pulses)")
+    print(f"Total Distance: {total_distance:.2f} cm")
+    stop_motor()
+
+def stop_motor():
+    """Stop all motors."""
+    IN1.off()
+    IN2.off()
+    IN3.off()
+    IN4.off()
+    ENA.value = 0
+    ENB.value = 0
+
+def get_color_mask(hsv):
+    """Detect declared color lines, return best mask and accurate color name."""
+    COLOR_RANGES = {
+        "yellow": ([80, 100, 100], [100, 255, 255]),
+        "green": ([35, 70, 70], [80, 255, 255]),
+        "red": ([100, 150, 50], [130, 255, 255]),
+        "black": ([0, 0, 0], [0, 0, 0]),
+        "blue1": ([0, 100, 100], [130, 255, 255]),
+        "blue2": ([160, 100, 100], [179, 255, 255]),
+    }
+
+    best_area = 0
+    best_mask = None
+    best_color = "none"
+
+    for color_name, (lower, upper) in COLOR_RANGES.items():
+        lower_np = np.array(lower)
+        upper_np = np.array(upper)
+        mask = cv2.inRange(hsv, lower_np, upper_np)
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(largest)
+            if area > 300 and area > best_area:
+                best_area = area
+                best_color = color_name
+                best_mask = mask
+
+    return best_mask, best_color
+
+def detect_color(hsv):
+    """Detect dominant color for shape detection (green, blue, red)."""
+    color_counts = {}
+    for color, ranges in SHAPE_COLOR_RANGES.items():
+        if len(ranges) == 2:
+            mask = cv2.inRange(hsv, np.array(ranges[0]), np.array(ranges[1]))
+        else:
+            mask1 = cv2.inRange(hsv, np.array(ranges[0]), np.array(ranges[1]))
+            mask2 = cv2.inRange(hsv, np.array(ranges[2]), np.array(ranges[3]))
+            mask = mask1 | mask2
+        color_counts[color] = cv2.countNonZero(mask)
+    detected_color = max(color_counts, key=color_counts.get)
+    return detected_color if color_counts[detected_color] > 300 else "Unknown"
+
+def detect_shapes(image):
+    """Detect geometric shapes, circles, and partial circles."""
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 50, 150)
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    detected_shapes = []
+
+    for contour in contours:
+        if cv2.contourArea(contour) < 300:
+            continue
+        approx = cv2.approxPolyDP(contour, 0.02 * cv2.arcLength(contour, True), True)
+        vertices = len(approx)
+        shape = SHAPE_NAMES.get(vertices, "Unknown")
+
+        # Check for circles and partial circles
+        (x, y), radius = cv2.minEnclosingCircle(contour)
+        circle_area = np.pi * (radius ** 2)
+        contour_area = cv2.contourArea(contour)
+
+        if vertices not in [5, 6]:
+            if 0.6 < (contour_area / circle_area) < 0.9:
+                shape = "Partial Circle"
+            elif 0.9 <= (contour_area / circle_area) <= 1.3:
+                shape = "Circle"
+
+        detected_shapes.append(shape)
+    return detected_shapes
+
+def load_templates():
+    """Load template images and compute their features."""
+    templates = {}
+    template_features = {}
+    for filename in os.listdir(template_path):
+        if filename.endswith((".jpg", ".png")):
+            label = filename.split(".")[0]
+            img = cv2.imread(os.path.join(template_path, filename), cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                print(f"Warning: Could not load template {filename}")
+                continue
+            templates[label] = img
+            keypoints, descriptors = akaze.detectAndCompute(img, None)
+            template_features[label] = (keypoints, descriptors)
+            print(f"Loaded template: {label}")
+    return templates, template_features
+
+def load_face_templates():  
+    """Load face template images from known_faces and compute their features."""
+    face_templates = {}
+    face_template_features = {}
+    for filename in os.listdir(known_faces_path):
+        if filename.endswith((".jpg", ".png")):
+            label = filename.split(".")[0]
+            img = cv2.imread(os.path.join(known_faces_path, filename), cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                print(f"Warning: Could not load face template {filename}")
+                continue
+            face_templates[label] = img
+            keypoints, descriptors = akaze.detectAndCompute(img, None)
+            face_template_features[label] = (keypoints, descriptors)
+            print(f"Loaded face template: {label}")
+    return face_templates, face_template_features
+
+def match_faces():
+    """Perform template matching for faces in known_faces until space key is pressed."""
+    face_templates, face_template_features = load_face_templates()
+    if not face_templates:
+        print("Warning: No face templates loaded from known_faces")
+        return "Unknown"
+
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+    last_match = "Unknown"
+    print("Starting face recognition. Press space to continue.")
+
+    while True:
+        frame_rgb = picam2.capture_array("main")
+        if frame_rgb is None or frame_rgb.size == 0:
+            time.sleep(0.1)
+            continue
+
+        live_gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+        live_keypoints, live_descriptors = akaze.detectAndCompute(live_gray, None)
+        if live_descriptors is None or len(live_keypoints) < 5:
+            time.sleep(0.1)
+            continue
+
+        best_match, best_count = None, 0
+        for label, (template_keypoints, template_descriptors) in face_template_features.items():
+            if template_descriptors is None or len(template_keypoints) < 5:
+                continue
+            matches = bf.knnMatch(template_descriptors, live_descriptors, k=2)
+            good_matches = [m for m, n in matches if m.distance < 0.7 * n.distance]
+            if len(good_matches) >= 6 and len(good_matches) > best_count:
+                best_match, best_count = label, len(good_matches)
+                print(f"Face {label}: {len(good_matches)} matches")
+
+        if best_match is None:
+            best_match = "Unknown"
+            print("Unknown: Less than 6 matches")
+
+        if best_match != "Unknown":
+            last_match = best_match
+            print(f"Current match: {last_match}")
+
+        frame_copy = frame_rgb.copy()
+        cv2.putText(frame_copy, f"Face: {last_match}", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+        cv2.putText(frame_copy, "Press space to continue", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 255, 0), 1)
+        cv2.imshow("Camera Feed", frame_copy)
+
+        key = cv2.waitKey(50) & 0xFF
+        if key == ord(' '):
+            print(f"Face recognition stopped. Final match: {last_match}")
+            return last_match
+        elif key == ord('q'):
+            raise KeyboardInterrupt("User quit during face recognition")
+
+        time.sleep(0.05)
+        
+def match_with_templates(live_frame, templates, template_features):
+    """Match live frame with templates using AKAZE."""
+    if live_frame is None or live_frame.size == 0:
+        return None
+    live_gray = cv2.cvtColor(live_frame, cv2.COLOR_RGB2GRAY)
+    live_keypoints, live_descriptors = akaze.detectAndCompute(live_gray, None)
+    if live_descriptors is None or len(live_keypoints) < 5:
+        return None
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+    best_match, best_count = None, 0
+    for label, (template_keypoints, template_descriptors) in template_features.items():
+        if template_descriptors is None or len(template_keypoints) < 5:
+            continue
+        matches = bf.knnMatch(template_descriptors, live_descriptors, k=2)
+        good_matches = [m for m, n in matches if m.distance < 0.7 * n.distance]
+        if len(good_matches) > best_count and len(good_matches) > 5:
+            best_match, best_count = label, len(good_matches)
+            print(f"Template {label}: {len(good_matches)} matches")
+    return best_match if best_count > 5 else None
+
+def process_image(templates, template_features):
+    """Process image for line following and object detection."""
+    frame_rgb = picam2.capture_array("main")
+    if frame_rgb is None or frame_rgb.size == 0:
+        return None, frame_rgb, None, "none", 0, None
+
+    original_frame = frame_rgb.copy()
+    hsv = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2HSV)
+    gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, binary = cv2.threshold(blurred, 100, 255, cv2.THRESH_BINARY_INV)
+
+    non_black_mask = (gray > 50).astype(np.uint8) * 255
+    non_black_pixels = cv2.countNonZero(non_black_mask)
+
+    color_mask, color_name = get_color_mask(hsv)
+    if color_mask is not None and color_name != "none":
+        contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(largest)
+            if area > 300:
+                M = cv2.moments(largest)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cv2.drawContours(frame_rgb, [largest], -1, (0, 0, 255), 2)
+                    cv2.circle(frame_rgb, (cx, 90), 5, (0, 0, 255), -1)
+                    print(f"Detected color line: {color_name}")
+                    return cx, frame_rgb, color_mask, color_name, non_black_pixels, original_frame
+
+    black_mask = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 50]))
+    contours, _ = cv2.findContours(black_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        largest = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(largest)
+        if area > 300:
+            M = cv2.moments(largest)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cv2.drawContours(frame_rgb, [largest], -1, (0, 255, 0), 2)
+                cv2.circle(frame_rgb, (cx, 90), 5, (255, 0, 0), -1)
+                print("Detected line: black (fallback)")
+                return cx, frame_rgb, black_mask, "black", non_black_pixels, original_frame
+
+    return None, frame_rgb, binary, "none", non_black_pixels, original_frame
+
+def main():
+    """Main loop for line following and object detection with distance tracking and face recognition."""
+    global total_distance, measuring_distance
+    templates, template_features = load_templates()
+    distance_templates = ["distance", "distance1", "distance2", "distance3"]
+    face_templates = ["facerec", "facerec1", "facerec2", "facerec3"]
+    frame_center = 80  # Adjusted for 160x120 resolution
+    last_known_cx = frame_center
+    lost_line = False
+    search_direction = -1
+    last_detection_time = time.time()
+    DETECTION_COOLDOWN = 6
+    NON_BLACK_THRESHOLD = 2000  # Adjusted for smaller resolution
+    detection_recently_triggered = False
+    frame_count = 0
+    fps_start_time = time.time()
+
+    cv2.namedWindow("Camera Feed", cv2.WINDOW_NORMAL)
+    cv2.namedWindow("Mask", cv2.WINDOW_NORMAL)
+    cv2.moveWindow("Camera Feed", 0, 0)
+    cv2.moveWindow("Mask", 170, 0)
+
+    try:
+        while True:
+            start_time = time.time()
+            cx, frame_bgr, mask_display, line_type, non_black_pixels, original_frame = process_image(templates, template_features)
+            if frame_bgr is None:
+                time.sleep(0.05)
+                continue
+
+            frame_count += 1
+            if frame_count % 30 == 0:
+                fps = frame_count / (time.time() - fps_start_time)
+                distance_msg = f", Total Distance: {total_distance:.2f} cm" if measuring_distance else ""
+                print(f"FPS: {fps:.2f}{distance_msg}")
+                frame_count = 0
+                fps_start_time = time.time()
+
+            current_time = time.time()
+            status = "Following Line" if cx is not None else "Searching Line"
+
+            if measuring_distance:
+                cv2.putText(frame_bgr, f"Distance: {total_distance:.2f} cm", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+
+            if detection_recently_triggered:
+                if current_time - last_detection_time > DETECTION_COOLDOWN:
+                    detection_recently_triggered = False
+                else:
+                    cv2.putText(frame_bgr, f"Status: {status}", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+                    cv2.imshow("Camera Feed", frame_bgr)
+                    cv2.imshow("Mask", mask_display)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+                    continue
+
+            if non_black_pixels > NON_BLACK_THRESHOLD:
+                detected_item = None
+                matched_template = match_with_templates(original_frame, templates, template_features)
+                if matched_template:
+                    text = f"Detected: {matched_template} (Symbol)"
+                    detected_item = True
+                    if matched_template in face_templates:
+                        stop_motor()
+                        print(f"Stopping for face recognition: {text}")
+                        try:
+                            face_result = match_faces()
+                            text = f"Detected: {face_result} (Face)"
+                            print(f"Face detection result: {text}")
+                            cv2.putText(frame_bgr, text, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 255, 0), 1)
+                        except Exception as e:
+                            text = f"Error in face recognition: {e}"
+                            print(text)
+                        last_detection_time = current_time
+                        detection_recently_triggered = True
+                        print("Moving forward 10 cm after face recognition")
+                        move_forward(5, 25)
+                        stop_motor()
+                    elif matched_template in distance_templates:
+                        if not measuring_distance:
+                            print(f"Starting distance measurement at {matched_template}")
+                            measuring_distance = True
+                            total_distance = 0
+                        else:
+                            print(f"Stopping distance measurement at {matched_template}. Total: {total_distance:.2f} cm")
+                            measuring_distance = False
+                            total_distance = 0
+                    else:
+                        text = f"Detected: {matched_template} (Symbol)"
+                else:
+                    hsv = cv2.cvtColor(original_frame, cv2.COLOR_BGR2HSV)
+                    detected_color = detect_color(hsv)
+                    detected_shapes = detect_shapes(original_frame)
+                    if detected_shapes and detected_color != "Unknown":
+                        shape = detected_shapes[0]
+                        text = f"Detected: {shape} ({detected_color})"
+                        detected_item = True
+
+                if detected_item and matched_template not in face_templates:
+                    cv2.putText(frame_bgr, text, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 255, 0), 1)
+                    stop_motor()
+                    print(f"Stopping for 5 seconds: {text}")
+                    last_detection_time = current_time
+                    detection_recently_triggered = True
+                    for i in range(5, 0, -1):
+                        frame_copy = frame_bgr.copy()
+                        cv2.putText(frame_copy, f"Status: {status}", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+                        cv2.putText(frame_copy, text, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+                        cv2.putText(frame_copy, f"Resuming in: {i}s", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 255), 1)
+                        if measuring_distance:
+                            cv2.putText(frame_copy, f"Distance: {total_distance:.2f} cm", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+                        cv2.imshow("Camera Feed", frame_copy)
+                        cv2.imshow("Mask", mask_display)
+                        cv2.waitKey(1000)
+                    print("Moving forward 10 cm after detection pause")
+                    move_forward(5, 60)
+                    stop_motor()
+
+            if cx is not None:
+                lost_line = False
+                last_known_cx = cx
+                error = cx - frame_center
+                duty_cycle = 80
+                if abs(error) < 60:
+                    move_forward(5, 60)
+                elif error < 0:
+                    IN1.off()
+                    IN2.on()
+                    IN3.on()
+                    IN4.off()
+                    ENA.value = (duty_cycle - 5) / 100
+                    ENB.value = duty_cycle / 100
+                    time.sleep(0.05)
+                    stop_motor()
+                else:
+                    IN1.on()
+                    IN2.off()
+                    IN3.off()
+                    IN4.on()
+                    ENA.value = duty_cycle / 100
+                    ENB.value = (duty_cycle - 5) / 100
+                    time.sleep(0.05)
+                    stop_motor()
+            else:
+                if not lost_line:
+                    stop_motor()
+                    time.sleep(0.1)
+                    lost_line = True
+                search_direction = -1 if last_known_cx < frame_center else 1
+                if search_direction == -1:
+                    turn_left(5, 80)
+                else:
+                    turn_right(5, 80)
+                cx_check, _, _, _, _, _ = process_image(templates, template_features)
+                if cx_check is not None:
+                    continue
+
+            cv2.putText(frame_bgr, f"Status: {status}", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+            cv2.imshow("Camera Feed", frame_bgr)
+            cv2.imshow("Mask", mask_display)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+
+            elapsed = time.time() - start_time
+            if elapsed < 0.01:
+                time.sleep(0.01 - elapsed)
+
+    except KeyboardInterrupt:
+        print("Stopped by user")
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        stop_motor()
+        cv2.destroyAllWindows()
+        picam2.stop()
+        left_encoder.close()
+        right_encoder.close()
+        IN1.close()
+        IN2.close()
+        IN3.close()
+        IN4.close()
+        ENA.close()
+        ENB.close()
+        final_distance = total_distance if measuring_distance else 0
+        print(f"Cleanup complete. Final Distance Traveled: {final_distance:.2f} cm")
+
+if __name__ == "__main__":
+    main()
