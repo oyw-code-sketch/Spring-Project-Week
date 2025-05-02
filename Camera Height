@@ -1,0 +1,125 @@
+import time
+import cv2
+import numpy as np
+from gpiozero import OutputDevice, PWMLED
+from picamera2 import Picamera2, Preview
+
+# Define GPIO Pins for Motor Driver (L298N)
+IN1 = OutputDevice(17)
+IN2 = OutputDevice(27)
+IN3 = OutputDevice(22)
+IN4 = OutputDevice(23)
+
+# Define PWM pins with speed range 0-255
+ENA = PWMLED(18)  # Left Motor
+ENB = PWMLED(19)  # Right Motor
+
+# Initialize PiCamera
+picam2 = Picamera2()
+picam2.start_preview(Preview.QTGL)
+preview_config = picam2.create_preview_configuration()
+picam2.configure(preview_config)
+picam2.start()
+
+camera_height = 10
+
+def set_motor_speed(pwm, speed):
+    """Convert speed from 0-255 to 0-1 and set motor power."""
+    pwm.value = max(0, min(speed / 255, 1))
+
+def process_image():
+    """Capture and process an image to find the line position."""
+    start_time = time.time()  # Start measuring processing time
+
+    frame = picam2.capture_array()
+    
+    # Convert to grayscale
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # Apply Gaussian Blur to reduce noise
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # Apply adaptive threshold for better line detection
+    binary = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+
+    # Apply Canny edge detection
+    edges = cv2.Canny(binary, 50, 150)
+
+    # Find contours of the black region
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    processing_time = time.time() - start_time  # Calculate processing time
+    print(f"Height: {camera_height} cm | Processing Time: {processing_time:.4f} seconds")  # Print processing time
+
+    if contours:
+        largest_contour = max(contours, key=cv2.contourArea)
+        M = cv2.moments(largest_contour)
+        
+        if M["m00"] != 0:
+            cx = int(M["m10"] / M["m00"])
+            return cx
+    
+    return None  # Return None if no line is detected
+
+def move_forward(speed=115):
+    """Move forward with adjustable speed (0-255)."""
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)
+    IN1.on()
+    IN2.off()
+    IN3.on()
+    IN4.off()
+
+def turn_left(speed=120):
+    """Turn left with a reduced speed for smooth movement."""
+    set_motor_speed(ENA, speed)  # Reduce left speed
+    set_motor_speed(ENB, speed)  # Full speed on right wheel
+    IN1.off()
+    IN2.on()
+    IN3.on()
+    IN4.off()
+
+def turn_right(speed=120):
+    """Turn right with a reduced speed for smooth movement."""
+    set_motor_speed(ENA, speed)  # Full speed on left wheel
+    set_motor_speed(ENB, speed)  # Reduce right speed
+    IN1.on()
+    IN2.off()
+    IN3.off()
+    IN4.on()
+
+def stop():
+    """Stop the motors."""
+    set_motor_speed(ENA, 0)
+    set_motor_speed(ENB, 0)
+    IN1.off()
+    IN2.off()
+    IN3.off()
+    IN4.off()
+
+# Main loop for continuous line following
+try:
+    print("Starting Line Following...")
+    frame_center = 320  # Assuming image width is 640 pixels
+
+    while True:
+        cx = process_image()
+        
+        if cx is not None:
+            error = cx - frame_center  # Difference from the center
+            
+            if abs(error) < 100:  # If within a small threshold, move forward
+                move_forward(115)
+            elif error < 0:  # Line is to the left
+                turn_left(120)
+            else:  # Line is to the right
+                turn_right(120)
+        else:
+            # If no line is detected, stop the robot
+            stop()
+
+        time.sleep(0.05)  # Small delay to prevent excessive processing
+
+except KeyboardInterrupt:
+    print("Stopping Robot...")
+    stop()
