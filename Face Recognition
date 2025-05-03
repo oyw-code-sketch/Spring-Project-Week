@@ -1,0 +1,58 @@
+import cv2
+import os
+import numpy as np
+from picamera2 import Picamera2
+import time
+
+# Load Haar face detector
+face_cascade = cv2.CascadeClassifier("/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml")
+
+# Load known faces and compute histograms
+known_faces = {}
+for file in os.listdir("known_faces"):
+    img = cv2.imread(f"known_faces/{file}", cv2.IMREAD_GRAYSCALE)
+    faces = face_cascade.detectMultiScale(img, scaleFactor=1.1, minNeighbors=5)
+    for (x, y, w, h) in faces:
+        face = img[y:y+h, x:x+w]
+        face = cv2.resize(face, (100, 100))
+        hist = cv2.calcHist([face], [0], None, [256], [0, 256])
+        hist = cv2.normalize(hist, hist).flatten()
+        known_faces[os.path.splitext(file)[0]] = hist
+        break  # Only one face per image
+
+# Initialize PiCamera2
+picam2 = Picamera2()
+picam2.preview_configuration.main.size = (640, 480)
+picam2.preview_configuration.main.format = "RGB888"
+picam2.configure("preview")
+picam2.start()
+time.sleep(1)  # Give camera time to warm up
+
+while True:
+    frame = picam2.capture_array()
+    gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+    faces = face_cascade.detectMultiScale(gray, 1.1, 5)
+
+    for (x, y, w, h) in faces:
+        face = gray[y:y+h, x:x+w]
+        face_resized = cv2.resize(face, (100, 100))
+        hist = cv2.calcHist([face_resized], [0], None, [256], [0, 256])
+        hist = cv2.normalize(hist, hist).flatten()
+
+        best_match = "Unknown"
+        min_diff = float('inf')
+        for name, known_hist in known_faces.items():
+            diff = cv2.compareHist(hist, known_hist, cv2.HISTCMP_BHATTACHARYYA)
+            if diff < min_diff and diff < 0.5:  # Adjustable threshold
+                min_diff = diff
+                best_match = name
+
+        cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        cv2.putText(frame, best_match, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+    cv2.imshow("Face Recognition", frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cv2.destroyAllWindows()
+picam2.stop()
