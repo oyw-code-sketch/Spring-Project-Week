@@ -1,0 +1,151 @@
+import time
+import cv2
+import numpy as np
+from gpiozero import OutputDevice, PWMLED
+from picamera2 import Picamera2
+
+# Define GPIO Pins for Motor Driver (L298N)
+IN1 = OutputDevice(17)
+IN2 = OutputDevice(27)
+IN3 = OutputDevice(22)
+IN4 = OutputDevice(23)
+
+# Define PWM pins with speed range 0-255
+ENA = PWMLED(18)  # Left Motor
+ENB = PWMLED(19)  # Right Motor
+
+# Initialize PiCamera
+picam2 = Picamera2()
+preview_config = picam2.create_preview_configuration(main={"size": (640, 480), "format": "RGB888"})
+picam2.configure(preview_config)
+picam2.start()
+
+def set_motor_speed(pwm, speed):
+    """Convert speed from 0-255 to 0-1 and set motor power."""
+    pwm.value = max(0, min(speed / 255, 1))
+
+def process_image():
+    """Process the camera frame and return the position of the black line."""
+    frame = picam2.capture_array()
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # Use binary threshold for faster processing instead of adaptive threshold
+    _, binary = cv2.threshold(blurred, 100, 255, cv2.THRESH_BINARY_INV)
+
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if contours:
+        largest_contour = max(contours, key=cv2.contourArea)
+        M = cv2.moments(largest_contour)
+        if M["m00"] != 0:
+            cx = int(M["m10"] / M["m00"])
+            
+            # Draw the detected contour and center point for debugging
+            cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
+            cv2.circle(frame, (cx, 240), 5, (0, 0, 255), -1)
+            
+            return cx, frame, binary  # Return x-coordinate, frame, and processed binary image
+
+    return None, frame, binary  # No line detected, return frames for display
+
+def move_forward(speed=100):
+    """Move forward with adjustable speed (0-255)."""
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)
+    IN1.on()
+    IN2.off()
+    IN3.on()
+    IN4.off()
+
+def turn_left(speed=120):
+    """Turn left by reducing right motor speed."""
+    set_motor_speed(ENA, speed)  # Reduce left motor speed
+    set_motor_speed(ENB, speed)
+    IN1.off()
+    IN2.on()
+    IN3.on()
+    IN4.off()
+
+def turn_right(speed=120):
+    """Turn right by reducing left motor speed."""
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)  # Reduce right motor speed
+    IN1.on()
+    IN2.off()
+    IN3.off()
+    IN4.on()
+
+def stop():
+    """Stop all motors."""
+    set_motor_speed(ENA, 0)
+    set_motor_speed(ENB, 0)
+    IN1.off()
+    IN2.off()
+    IN3.off()
+    IN4.off()
+    
+try:
+    frame_center = 320  # Assuming image width is 640 pixels
+    last_known_cx = frame_center  # Store the last known position
+    lost_line = False
+    search_direction = -1  # Start searching left first
+    search_time = 0.2  # Initial search duration
+
+    while True:
+        cx, frame, binary = process_image()
+
+        if cx is not None:
+            lost_line = False  # Reset lost flag since line is found
+            last_known_cx = cx  # Update last known position
+            search_time = 0.2  # Reset search time
+
+            error = cx - frame_center  # Difference from center
+
+            if abs(error) < 80:  # Within threshold, move forward
+                move_forward(120)
+            elif error < 0:  # Turn left
+                turn_left(120)
+            else:  # Turn right
+                turn_right(120)
+        
+        else:  # If no black line detected, stop and search dynamically
+            if not lost_line:
+                stop()
+                time.sleep(0.2)  # Small pause before searching
+                lost_line = True
+
+            # Search in the last known direction
+            if last_known_cx < frame_center:
+                search_direction = -1  # Last seen left, search left first
+            else:
+                search_direction = 1  # Last seen right, search right first
+
+            if search_direction == -1:
+                turn_left(120)
+            else:
+                turn_right(120)
+
+            time.sleep(search_time)
+            cx_check, _, _ = process_image()
+            if cx_check is not None:
+                continue  # Found the line, continue moving
+
+            # If still no line, increase search duration and switch direction
+            search_time += 0.1  # Expand search step by step
+            search_direction *= -1  # Alternate direction
+
+        # Show the video preview on the laptop
+        cv2.imshow("Camera Feed", frame)
+        cv2.imshow("Binary Processing", binary)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break  # Press 'q' to exit
+
+        time.sleep(0.02)  # Reduce delay for faster response
+
+except KeyboardInterrupt:
+    stop()
+    print("Program stopped.")
+finally:
+    cv2.destroyAllWindows()
