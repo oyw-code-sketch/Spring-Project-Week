@@ -1,0 +1,152 @@
+import cv2
+import numpy as np
+import os
+from picamera2 import Picamera2
+
+# Define HSV color ranges
+COLOR_RANGES = {
+    "red": [(0, 100, 100), (10, 255, 255), (170, 100, 100), (180, 255, 255)],
+    "green": [(35, 50, 50), (85, 255, 255)],
+    "blue": [(90, 50, 50), (130, 255, 255)]
+}
+
+SHAPE_NAMES = {3: "Triangle", 4: "Rectangle", 5: "Pentagon", 6: "Hexagon"}
+
+# Path to template images (Ensure templates exist for arrows)
+template_path = "templates"
+os.makedirs(template_path, exist_ok=True)
+
+# Initialize AKAZE detector for better feature matching
+akaze = cv2.AKAZE_create()
+
+# Initialize the camera
+picam2 = Picamera2()
+picam2.configure(picam2.create_preview_configuration(main={"size": (640, 480)}))
+picam2.start()
+
+
+def detect_color(hsv):
+    """Detects the dominant color in the image."""
+    color_counts = {}
+    for color, ranges in COLOR_RANGES.items():
+        if len(ranges) == 2:
+            mask = cv2.inRange(hsv, np.array(ranges[0]), np.array(ranges[1]))
+        else:
+            mask1 = cv2.inRange(hsv, np.array(ranges[0]), np.array(ranges[1]))
+            mask2 = cv2.inRange(hsv, np.array(ranges[2]), np.array(ranges[3]))
+            mask = mask1 | mask2
+        color_counts[color] = cv2.countNonZero(mask)
+    detected_color = max(color_counts, key=color_counts.get)
+    return detected_color if color_counts[detected_color] > 500 else "Unknown"
+
+
+def detect_shapes(image):
+    """Detects geometric shapes in the image."""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 50, 150)
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    detected_shapes = []
+
+    for contour in contours:
+        if cv2.contourArea(contour) < 500:
+            continue
+        approx = cv2.approxPolyDP(contour, 0.02 * cv2.arcLength(contour, True), True)
+        vertices = len(approx)
+        shape = SHAPE_NAMES.get(vertices, "Unknown")
+
+        (x, y), radius = cv2.minEnclosingCircle(contour)
+        circle_area = np.pi * (radius ** 2)
+        contour_area = cv2.contourArea(contour)
+
+        if vertices not in [5, 6]:
+            if 0.6 < (contour_area / circle_area) < 0.9:
+                shape = "3/4 Circle"
+            elif 0.9 <= (contour_area / circle_area) <= 1.1:
+                shape = "Circle"
+        detected_shapes.append(shape)
+    return detected_shapes
+
+
+def load_templates():
+    """Loads template images for feature matching."""
+    templates = {}
+    for filename in os.listdir(template_path):
+        if filename.endswith(".jpg") or filename.endswith(".png"):
+            label = filename.split(".")[0]
+            img = cv2.imread(os.path.join(template_path, filename), cv2.IMREAD_GRAYSCALE)
+            templates[label] = img
+    return templates
+
+
+def match_with_templates(live_frame, templates):
+    """Compares the live frame with stored template images using ORB feature matching."""
+    live_gray = cv2.cvtColor(live_frame, cv2.COLOR_BGR2GRAY)
+    live_keypoints, live_descriptors = akaze.detectAndCompute(live_gray, None)
+
+    if live_descriptors is None:
+        return None  # No keypoints detected
+
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+
+    best_match = None
+    best_match_count = 0
+
+    for label, template in templates.items():
+        template_keypoints, template_descriptors = akaze.detectAndCompute(template, None)
+        if template_descriptors is None:
+            continue
+
+        # Apply KNN match with Lowe's ratio test
+        matches = bf.knnMatch(template_descriptors, live_descriptors, k=2)
+
+        # **Fixed the unpacking error here**
+        good_matches = [m for m_n in matches if len(m_n) == 2 for m, n in [m_n] if m.distance < 0.7 * n.distance]
+
+        if len(good_matches) > best_match_count:
+            best_match = label
+            best_match_count = len(good_matches)
+
+    # Set a minimum confidence threshold to avoid false positives
+    if best_match_count > 15:  # Lowered from 15 to improve arrow detection
+        return best_match
+
+    return None  # No reliable match found
+
+
+def process_frame():
+    """Captures frames and processes them for template matching or shape & color detection."""
+    templates = load_templates()
+
+    while True:
+        frame = picam2.capture_array()
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+        # Step 1: Try to match with templates first
+        matched_template = match_with_templates(frame, templates)
+
+        if matched_template:
+            cv2.putText(frame, f"Detected: {matched_template}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+        else:
+            # Step 2: If no match, detect shape and color
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            detected_color = detect_color(hsv)
+            detected_shapes = detect_shapes(frame)
+
+            for i, shape in enumerate(detected_shapes):
+                cv2.putText(frame, f"Shape: {shape}, Color: {detected_color}", (10, 30 + i * 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+
+        cv2.imshow("Detection", frame)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cv2.destroyAllWindows()
+
+
+# Run the processing function
+process_frame()
+picam2.stop()
+
+
