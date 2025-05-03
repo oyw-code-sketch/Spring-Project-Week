@@ -1,0 +1,155 @@
+from gpiozero import Button, OutputDevice, PWMOutputDevice
+import time
+
+# Define GPIO Pins for Motor Driver (L298N)
+IN1 = OutputDevice(17)
+IN2 = OutputDevice(27)
+IN3 = OutputDevice(22)
+IN4 = OutputDevice(23)
+ENA = PWMOutputDevice(18)  # Left motor speed
+ENB = PWMOutputDevice(19)  # Right motor speed
+
+# Define GPIO Pins for Encoders
+ENC_LEFT = 5
+ENC_RIGHT = 6
+
+# Constants for distance calculation
+PULSES_PER_REVOLUTION = 20  # Adjust based on encoder specifications
+WHEEL_CIRCUMFERENCE = 50.8395  # cm (adjust based on actual wheel diameter)
+ROBOT_TURN_CIRCUMFERENCE = 150 # cm
+
+# Pulse counters
+left_pulses = 0
+right_pulses = 0
+
+# Create Button objects for encoders
+left_encoder = Button(ENC_LEFT)
+right_encoder = Button(ENC_RIGHT)
+
+# Callback functions for detecting encoder pulses
+def left_encoder_callback():
+    global left_pulses
+    left_pulses += 1
+
+def right_encoder_callback():
+    global right_pulses
+    right_pulses += 1
+
+# Attach the callbacks to the buttons
+left_encoder.when_pressed = left_encoder_callback
+right_encoder.when_pressed = right_encoder_callback
+
+# Function to calculate the distance traveled
+def get_distance(pulses):
+    return (pulses / PULSES_PER_REVOLUTION) * WHEEL_CIRCUMFERENCE/2
+
+# Function to reset pulse counters
+def reset_pulses():
+    global left_pulses, right_pulses
+    left_pulses = 0
+    right_pulses = 0
+
+# Function to move forward a specified distance
+def move_forward(distance, duty_cycle):
+    reset_pulses()
+    IN1.on()
+    IN2.off()
+    IN3.on()
+    IN4.off()
+    ENA.value = duty_cycle / 100  # Ensure value is between 0.0 and 1.0
+    ENB.value = duty_cycle / 100  # Ensure value is between 0.0 and 1.0
+
+    start_time = time.time()
+    
+    while get_distance(left_pulses) < distance and get_distance(right_pulses) < distance:
+        time.sleep(0.01)
+    
+    elapsed_time = time.time() - start_time
+    avg_distance = (get_distance(left_pulses) + get_distance(right_pulses)) / 2
+    speed = (avg_distance / 100) / elapsed_time  # Convert cm to meters
+    
+    print(f"Forward - Left: {get_distance(left_pulses)} cm ({left_pulses} pulses), Right: {get_distance(right_pulses)} cm ({right_pulses} pulses)")
+    print(f"Speed: {speed:.2f} m/s")
+    
+    stop_motor()
+
+# Function to move backward a specified distance
+def move_backward(distance, duty_cycle):
+    reset_pulses()
+    IN1.off()
+    IN2.on()
+    IN3.off()
+    IN4.on()
+    ENA.value = duty_cycle / 100  # Ensure value is between 0.0 and 1.0
+    ENB.value = duty_cycle / 100  # Ensure value is between 0.0 and 1.0
+
+    start_time = time.time()
+    
+    while get_distance(left_pulses) < distance and get_distance(right_pulses) < distance:
+        time.sleep(0.01)
+    
+    elapsed_time = time.time() - start_time
+    avg_distance = (get_distance(left_pulses) + get_distance(right_pulses)) / 2
+    speed = (avg_distance / 100) / elapsed_time  # Convert cm to meters
+    
+    print(f"Backward - Left: {get_distance(left_pulses)} cm ({left_pulses} pulses), Right: {get_distance(right_pulses)} cm ({right_pulses} pulses)")
+    print(f"Speed: {speed:.2f} m/s")
+    
+    stop_motor()
+
+# Function to turn left
+def turn_left(angle, duty_cycle):
+    reset_pulses()
+    IN1.off()
+    IN2.on()
+    IN3.on()
+    IN4.off()
+    ENA.value = duty_cycle / 100  # Ensure value is between 0.0 and 1.0
+    ENB.value = duty_cycle / 100  # Ensure value is between 0.0 and 1.0
+    
+    # Approximate turn calculation (may need tuning)
+    target_distance = (angle / 360) * ROBOT_TURN_CIRCUMFERENCE
+    target_pulses = (target_distance / WHEEL_CIRCUMFERENCE) * PULSES_PER_REVOLUTION
+    
+    while left_pulses < target_pulses and right_pulses < target_pulses:
+        time.sleep(0.01)
+    print(f"Turn Left - Left: {get_distance(left_pulses)} cm ({left_pulses} pulses), Right: {get_distance(right_pulses)} cm ({right_pulses} pulses)")
+    stop_motor()
+
+# Function to turn right
+def turn_right(angle, duty_cycle):
+    reset_pulses()
+    IN1.on()
+    IN2.off()
+    IN3.off()
+    IN4.on()
+    ENA.value = duty_cycle / 100  # Ensure value is between 0.0 and 1.0
+    ENB.value = duty_cycle / 100  # Ensure value is between 0.0 and 1.0
+    
+    # Approximate turn calculation (may need tuning)
+    target_distance = (angle / 360) * ROBOT_TURN_CIRCUMFERENCE
+    target_pulses = (target_distance / WHEEL_CIRCUMFERENCE) * PULSES_PER_REVOLUTION
+    while left_pulses < target_pulses and right_pulses < target_pulses:
+        time.sleep(0.01)
+    print(f"Turn Right - Left: {get_distance(left_pulses)} cm ({left_pulses} pulses), Right: {get_distance(right_pulses)} cm ({right_pulses} pulses)")
+    stop_motor()
+
+# Function to stop motors
+def stop_motor():
+    IN1.off()
+    IN2.off()
+    IN3.off()
+    IN4.off()
+    ENA.value = 0
+    ENB.value = 0
+
+# Main Test
+try:
+    move_forward(30, 30)  # Move forward 100 cm at 50% speed
+    move_backward(100, 100)  # Move backward 100 cm at 50% speed
+    turn_left(90,50)
+    turn_right(90,50)
+    
+finally:
+    stop_motor()
+
