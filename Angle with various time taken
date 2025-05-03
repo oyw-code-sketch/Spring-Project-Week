@@ -1,0 +1,68 @@
+from gpiozero import Button, OutputDevice, PWMOutputDevice
+import time
+
+# Define GPIO Pins for Motor Driver (L298N)
+IN1 = OutputDevice(17)
+IN2 = OutputDevice(27)
+IN3 = OutputDevice(22)
+IN4 = OutputDevice(23)
+ENA = PWMOutputDevice(18)  # Left motor speed
+ENB = PWMOutputDevice(19)  # Right motor speed
+
+# Define GPIO Pins for Encoders
+ENC_LEFT = 5
+ENC_RIGHT = 6
+
+# Constants for distance calculation
+PULSES_PER_REVOLUTION = 20  # Adjust based on encoder specifications
+WHEEL_CIRCUMFERENCE = 40.8395  # cm (adjust based on actual wheel diameter)
+ROBOT_TURN_CIRCUMFERENCE = 230 #cm
+
+# Function to turn left for a given time and duty cycle
+def turn_left(duration, duty_cycle):
+    IN1.off()
+    IN2.on()
+    IN3.on()
+    IN4.off()
+    ENA.value = duty_cycle / 100  # Convert to 0-1 range
+    ENB.value = duty_cycle / 100
+
+    time.sleep(duration)  # Run motors for given time
+
+    stop_motor()
+    print(f"Turned left for {duration} seconds at {duty_cycle}% duty cycle")
+
+# Function to turn right for a given time and duty cycle
+def turn_right(duration, duty_cycle):
+    IN1.on()
+    IN2.off()
+    IN3.off()
+    IN4.on()
+    ENA.value = duty_cycle / 100
+    ENB.value = duty_cycle / 100
+
+    time.sleep(duration)
+
+    stop_motor()
+    print(f"Turned right for {duration} seconds at {duty_cycle}% duty cycle")
+    
+
+# Function to stop motors
+def stop_motor():
+    IN1.off()
+    IN2.off()
+    IN3.off()
+    IN4.off()
+    ENA.value = 0
+    ENB.value = 0
+
+# Main Test
+try:
+   turn_right(2.125, 50)  # Turn left for 0.5 seconds at 50% speed
+   time.sleep(1)       # Small delay
+   turn_left(0.7, 60)  # Turn left for 0.7 seconds at 60% speed 
+   time.sleep(1)       # Small delay
+    
+finally:
+   stop_motor()
+   GPIO.cleanup()
