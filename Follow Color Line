@@ -1,0 +1,232 @@
+import time
+import cv2
+import numpy as np
+from gpiozero import OutputDevice, PWMLED
+from picamera2 import Picamera2
+from functools import reduce
+
+# Define GPIO Pins for Motor Driver (L298N)
+IN1 = OutputDevice(17)
+IN2 = OutputDevice(27)
+IN3 = OutputDevice(22)
+IN4 = OutputDevice(23)
+
+# Define PWM pins with speed range 0-255
+ENA = PWMLED(18)  # Left Motor
+ENB = PWMLED(19)  # Right Motor
+
+# Initialize PiCamera
+picam2 = Picamera2()
+preview_config = picam2.create_preview_configuration(main={"size": (640, 480), "format": "RGB888"})
+picam2.configure(preview_config)
+picam2.start()
+frame = picam2.capture_array()
+hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+
+def set_motor_speed(pwm, speed):
+    """Convert speed from 0-255 to 0-1 and set motor power."""
+    pwm.value = max(0, min(speed / 255, 1))
+
+ALL_COLOR_RANGES = {
+    "red1": ([0, 100, 100], [10, 255, 255]),
+    "red2": ([160, 100, 100], [179, 255, 255]),
+    "blue": ([90, 50, 20], [140, 255, 255]),
+    "green": ([40, 70, 70], [80, 255, 255]),
+    "yellow": ([20, 100, 100], [32, 255, 255]),
+    "black": ([0, 0, 0],[0, 0, 0]),
+}
+
+# You choose which to follow by uncommenting:
+COLOR_RANGES = {
+    "red1": ([0, 100, 100], [10, 255, 255]),
+    "red2": ([160, 100, 100], [179, 255, 255]),
+    #"yellow": ([20, 100, 100], [32, 255, 255]),
+     "blue": ([90, 50, 20], [140, 255, 255]),
+    "green": ([40, 70, 70], [80, 255, 255]),
+    "black": ([0, 0, 0], [0, 0, 0]),
+}
+
+BLUE_LOWER = np.array([100, 150, 100])
+BLUE_UPPER = np.array([130, 255, 255])
+
+def get_color_mask(hsv):
+    for color_name, (lower, upper) in COLOR_RANGES.items():
+        lower_np = np.array(lower)
+        upper_np = np.array(upper)
+        mask = cv2.inRange(hsv, lower_np, upper_np)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(largest)
+            if area > 1000:
+                return mask, color_name  # Return mask and name of detected color
+    return None, None
+
+def process_image():
+    frame = picam2.capture_array()
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    # Convert frame to grayscale
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # Apply Gaussian blur to reduce noise
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # Now apply thresholding (binary inversion)
+    _, binary = cv2.threshold(blurred, 100, 255, cv2.THRESH_BINARY_INV)
+
+    # Step 1: Color line detection
+    color_mask, color_name = get_color_mask(hsv)
+    if color_mask is not None:
+        contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(largest)
+            if area > 1000:
+                M = cv2.moments(largest)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cv2.drawContours(frame, [largest], -1, (0, 0, 255), 2)
+                    cv2.circle(frame, (cx, 240), 5, (255, 0, 0), -1)
+                    print(f"Detected color line: {color_name}")
+                    return cx, frame, color_mask, color_name  # Return actual name
+
+    # Step 2: Fallback to black line
+    black_mask = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 50]))
+    contours, _ = cv2.findContours(black_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if contours:
+        largest = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(largest)
+        if area > 1000:
+            M = cv2.moments(largest)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cv2.drawContours(frame, [largest], -1, (0, 255, 0), 2)
+                cv2.circle(frame, (cx, 240), 5, (0, 0, 255), -1)
+                print("Detected line: black (fallback)")
+                return cx, frame, binary, "black"
+
+    return None, frame, binary, "none"
+
+def move_forward(speed=100):
+    """Move forward with adjustable speed (0-255)."""
+    print("Moving forward")
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)
+    IN1.on()
+    IN2.off()
+    IN3.on()
+    IN4.off()
+
+def turn_left(speed=120):
+    """Turn left."""
+    print("Turning left")
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)
+    IN1.off()
+    IN2.on()
+    IN3.on()
+    IN4.off()
+
+def turn_right(speed=120):
+    """Turn right."""
+    print("Turning right")
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)
+    IN1.on()
+    IN2.off()
+    IN3.off()
+    IN4.on()
+
+def stop():
+    """Stop all motors."""
+    print("Stopping")
+    set_motor_speed(ENA, 0)
+    set_motor_speed(ENB, 0)
+    IN1.off()
+    IN2.off()
+    IN3.off()
+    IN4.off()
+
+# MAIN LOOP
+try:
+    frame_center = 320
+    last_known_cx = frame_center
+    lost_line = False
+    search_time = 0.2
+    search_direction = -1
+
+    while True:
+        cx, frame, mask_display, line_type = process_image()
+
+        if line_type not in COLOR_RANGES and line_type != "black" and line_type != "none":
+            print(f"Unknown color detected: {line_type}. Moving backward to search for black line.")
+            move_backward(80)
+            time.sleep(0.4)
+            stop()
+            # Skip directly to black line fallback by continuing the loop
+            continue
+
+        if cx is not None:
+            lost_line = False
+            last_known_cx = cx
+            search_time = 0.2
+            error = cx - frame_center
+            speed = 100
+
+            if abs(error) < 60:
+                move_forward(speed)
+            elif error < 0:
+                set_motor_speed(ENA, speed - 20)
+                set_motor_speed(ENB, speed)
+                IN1.off()
+                IN2.on()
+                IN3.on()
+                IN4.off()
+            else:
+                set_motor_speed(ENA, speed)
+                set_motor_speed(ENB, speed - 20)
+                IN1.on()
+                IN2.off()
+                IN3.off()
+                IN4.on()
+
+        else:
+            if not lost_line:
+                stop()
+                time.sleep(0.2)
+                lost_line = True
+
+            if last_known_cx < frame_center:
+                search_direction = -1
+            else:
+                search_direction = 1
+
+            if search_direction == -1:
+                turn_left(100)
+            else:
+                turn_right(100)
+
+            time.sleep(search_time)
+            cx_check, _, _, _ = process_image()
+            if cx_check is not None:
+                continue
+
+            search_time += 0.1
+            search_direction *= -1
+
+        cv2.imshow("Frame", frame)
+        cv2.imshow("Mask", mask_display)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+        time.sleep(0.02)
+
+except KeyboardInterrupt:
+    stop()
+finally:
+    stop()
+    cv2.destroyAllWindows()
+
