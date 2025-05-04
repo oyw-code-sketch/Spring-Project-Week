@@ -1,0 +1,136 @@
+import time
+import cv2
+import numpy as np
+from gpiozero import OutputDevice, PWMLED
+from picamera2 import Picamera2
+
+# Define GPIO Pins for Motor Driver (L298N)
+IN1 = OutputDevice(17)
+IN2 = OutputDevice(27)
+IN3 = OutputDevice(22)
+IN4 = OutputDevice(23)
+
+# Define PWM pins with speed range 0-255
+ENA = PWMLED(18)  # Left Motor
+ENB = PWMLED(19)  # Right Motor
+
+# Initialize PiCamera (Increase FPS for faster updates)
+picam2 = Picamera2()
+preview_config = picam2.create_preview_configuration(main={"size": (320, 240), "format": "RGB888"})  # **Lower resolution for speed**
+picam2.configure(preview_config)
+picam2.start()
+
+def set_motor_speed(pwm, speed):
+    pwm.value = max(0, min(speed / 255, 1))
+
+def move_forward(speed=120):
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)
+    IN1.on()
+    IN2.off()
+    IN3.on()
+    IN4.off()
+
+def turn_left(speed=120):
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)
+    IN1.off()
+    IN2.on()
+    IN3.on()
+    IN4.off()
+
+def turn_right(speed=120):
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)
+    IN1.on()
+    IN2.off()
+    IN3.off()
+    IN4.on()
+
+def stop():
+    set_motor_speed(ENA, 0)
+    set_motor_speed(ENB, 0)
+    IN1.off()
+    IN2.off()
+    IN3.off()
+    IN4.off()
+
+def process_image():
+    frame = picam2.capture_array()
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # Faster Blur (3x3 kernel instead of 7x7)
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+
+    # Edge detection
+    edges = cv2.Canny(blurred, 50, 150)
+
+    # **Make the edges thicker but faster**
+    kernel = np.ones((2, 2), np.uint8)  # Smaller kernel for speed
+    edges_dilated = cv2.dilate(edges, kernel, iterations=1)
+
+    # **Using Optimized Hough Transform**
+    lines = cv2.HoughLinesP(edges_dilated, 1, np.pi / 180, threshold=40, minLineLength=40, maxLineGap=20)
+    
+    if lines is not None:
+        avg_x = []
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            cv2.line(frame, (x1, y1), (x2, y2), (255, 0, 0), 4)  # **Thicker detected lines**
+            avg_x.append((x1 + x2) // 2)
+
+        if avg_x:
+            cx = sum(avg_x) // len(avg_x)
+            cv2.circle(frame, (cx, 120), 5, (255, 255, 0), -1)
+            return cx, frame, edges_dilated
+
+    return None, frame, edges_dilated
+
+try:
+    frame_center = 160  # Adjusted for 320x240 resolution
+    last_known_cx = frame_center  # Store the last known position
+    lost_line = False
+    search_direction = -1  # Start searching left first
+    search_time = 0.15  # Faster initial search
+
+    while True:
+        cx, frame, edges = process_image()
+        
+        if cx is not None:
+            error = cx - frame_center
+            last_known_cx = cx  # Update last known position
+            lost_line = False  # Reset lost line flag
+
+            if abs(error) < 50:
+                move_forward(140)  # Slightly increased speed
+            elif error < 0:
+                turn_left(130)
+            else:
+                turn_right(130)
+        
+        else:
+            # **Lost Line Recovery using Hough Transform**
+            if not lost_line:
+                lost_line = True
+                search_start = time.time()
+                search_direction *= -1  # Alternate search direction
+
+            if time.time() - search_start < search_time:
+                if search_direction == -1:
+                    turn_left(110)
+                else:
+                    turn_right(110)
+            else:
+                search_time = min(0.8, search_time + 0.05)  # Faster search increase
+
+        cv2.imshow("Camera Feed", frame)
+        cv2.imshow("Edge Detection", edges)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+except KeyboardInterrupt:
+    stop()
+finally:
+    cv2.destroyAllWindows()
+
