@@ -92,18 +92,18 @@ try:
     search_time = 0.15
 
     while True:
-        total_frames += 1
+        total_frames += 1 # Count every processed frame
         start_time = time.time()
 
         cx, frame, edges = process_image()
 
-        processing_time = (time.time() - start_time) * 1000  # ms
+        processing_time = (time.time() - start_time) * 1000  # Convert to milliseconds
         total_processing_time += processing_time
 
         if cx is not None:
-            line_detected_frames += 1
-            error = cx - frame_center
-            total_deviation += abs(error)
+            line_detected_frames += 1 # If a line is detected
+            error = cx - frame_center # cx is the detected line's horizontal center
+            total_deviation += abs(error) # Accumulate absolute deviation
             last_known_cx = cx
             lost_line = False
 
