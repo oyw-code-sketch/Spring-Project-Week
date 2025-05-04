@@ -1,0 +1,156 @@
+import time
+import cv2
+import numpy as np
+from gpiozero import OutputDevice, PWMLED
+from picamera2 import Picamera2
+
+# GPIO Pins
+IN1 = OutputDevice(17)
+IN2 = OutputDevice(27)
+IN3 = OutputDevice(22)
+IN4 = OutputDevice(23)
+ENA = PWMLED(18)
+ENB = PWMLED(19)
+
+# Initialize camera
+picam2 = Picamera2()
+preview_config = picam2.create_preview_configuration(main={"size": (320, 240), "format": "RGB888"})
+picam2.configure(preview_config)
+picam2.start()
+
+# Motor control functions
+def set_motor_speed(pwm, speed):
+    pwm.value = max(0, min(speed / 255, 1))
+
+def move_forward(speed=120):
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)
+    IN1.on()
+    IN2.off()
+    IN3.on()
+    IN4.off()
+
+def turn_left(speed=120):
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)
+    IN1.off()
+    IN2.on()
+    IN3.on()
+    IN4.off()
+
+def turn_right(speed=120):
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)
+    IN1.on()
+    IN2.off()
+    IN3.off()
+    IN4.on()
+
+def stop():
+    set_motor_speed(ENA, 0)
+    set_motor_speed(ENB, 0)
+    IN1.off()
+    IN2.off()
+    IN3.off()
+    IN4.off()
+
+def process_image():
+    frame = picam2.capture_array()
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    edges = cv2.Canny(blurred, 50, 150)
+    kernel = np.ones((2, 2), np.uint8)
+    edges_dilated = cv2.dilate(edges, kernel, iterations=1)
+    lines = cv2.HoughLinesP(edges_dilated, 1, np.pi / 180, threshold=40, minLineLength=40, maxLineGap=20)
+
+    if lines is not None:
+        avg_x = []
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            cv2.line(frame, (x1, y1), (x2, y2), (255, 0, 0), 4)
+            avg_x.append((x1 + x2) // 2)
+
+        if avg_x:
+            cx = sum(avg_x) // len(avg_x)
+            cv2.circle(frame, (cx, 120), 5, (255, 255, 0), -1)
+            return cx, frame, edges_dilated
+
+    return None, frame, edges_dilated
+
+# === Metric tracking ===
+total_frames = 0
+line_detected_frames = 0
+total_deviation = 0
+total_processing_time = 0
+
+# === Main loop ===
+try:
+    frame_center = 160
+    last_known_cx = frame_center
+    lost_line = False
+    search_direction = -1
+    search_time = 0.15
+
+    while True:
+        total_frames += 1
+        start_time = time.time()
+
+        cx, frame, edges = process_image()
+
+        processing_time = (time.time() - start_time) * 1000  # ms
+        total_processing_time += processing_time
+
+        if cx is not None:
+            line_detected_frames += 1
+            error = cx - frame_center
+            total_deviation += abs(error)
+            last_known_cx = cx
+            lost_line = False
+
+            if abs(error) < 50:
+                move_forward(140)
+            elif error < 0:
+                turn_left(130)
+            else:
+                turn_right(130)
+        else:
+            if not lost_line:
+                lost_line = True
+                search_start = time.time()
+                search_direction *= -1
+
+            if time.time() - search_start < search_time:
+                if search_direction == -1:
+                    turn_left(110)
+                else:
+                    turn_right(110)
+            else:
+                search_time = min(0.8, search_time + 0.05)
+
+        cv2.imshow("Camera Feed", frame)
+        cv2.imshow("Edge Detection", edges)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+except KeyboardInterrupt:
+    stop()
+
+finally:
+    stop()
+    cv2.destroyAllWindows()
+
+    # === Summary ===
+    print("\n===== Detection Summary =====")
+    print(f"Total Frames: {total_frames}")
+    print(f"Frames with Line Detected: {line_detected_frames}")
+    accuracy = (line_detected_frames / total_frames) * 100 if total_frames else 0
+    avg_deviation = (total_deviation / line_detected_frames) if line_detected_frames else 0
+    avg_processing_time = (total_processing_time / total_frames) if total_frames else 0
+    # Convert pixel deviation to cm (assuming 320px = ~16 cm)
+    cm_conversion = 16 / 320
+    avg_deviation_cm = avg_deviation * cm_conversion
+
+    print(f"Detection Accuracy: {accuracy:.2f}%")
+    print(f"Average Deviation: {avg_deviation_cm:.2f} cm")
+    print(f"Average Processing Time: {avg_processing_time:.2f} ms")
