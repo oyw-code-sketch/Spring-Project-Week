@@ -37,14 +37,10 @@ ALL_COLOR_RANGES = {
     "black": ([0, 0, 0],[0, 0, 0]),
 }
 
-# You choose which to follow by uncommenting:
 COLOR_RANGES = {
     "red1": ([0, 100, 100], [10, 255, 255]),
     "red2": ([160, 100, 100], [179, 255, 255]),
-    #"yellow": ([20, 100, 100], [32, 255, 255]),
-     "blue": ([90, 50, 20], [140, 255, 255]),
     "green": ([40, 70, 70], [80, 255, 255]),
-    "black": ([0, 0, 0], [0, 0, 0]),
 }
 
 BLUE_LOWER = np.array([100, 150, 100])
