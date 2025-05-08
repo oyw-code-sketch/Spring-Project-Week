@@ -19,7 +19,7 @@ ENC_RIGHT = 6
 
 # Constants for distance calculation
 PULSES_PER_REVOLUTION = 20  # Adjust based on encoder specifications
-WHEEL_CIRCUMFERENCE = 50.8395  # cm (adjust based on wheel diameter)
+WHEEL_CIRCUMFERENCE = 50.8  # cm (adjust based on wheel diameter)
 ROBOT_TURN_CIRCUMFERENCE = 150  # cm (adjust based on robot dimensions)
 
 # Pulse counters
