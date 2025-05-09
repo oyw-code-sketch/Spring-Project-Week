@@ -1,0 +1,173 @@
+import time
+from gpiozero import OutputDevice, PWMOutputDevice, Button
+
+# GPIO Setup for Motor Driver (L298N)
+IN1 = OutputDevice(17)
+IN2 = OutputDevice(27)
+IN3 = OutputDevice(22)
+IN4 = OutputDevice(23)
+ENA = PWMOutputDevice(18)  # Left motor speed
+ENB = PWMOutputDevice(19)  # Right motor speed
+
+# GPIO Pins for Encoders
+ENC_LEFT = 5
+ENC_RIGHT = 6
+
+# Constants for distance calculation
+PULSES_PER_REVOLUTION = 20  # Adjust based on encoder specifications
+WHEEL_CIRCUMFERENCE = 50.8  # cm (adjust based on wheel diameter)
+ROBOT_TURN_CIRCUMFERENCE = 150  # cm (adjust based on robot dimensions)
+
+# Pulse counters
+left_pulses = 0
+right_pulses = 0
+total_distance = 0  # Total distance traveled (cm)
+
+# Create Button objects for encoders
+left_encoder = Button(ENC_LEFT)
+right_encoder = Button(ENC_RIGHT)
+
+# Callback functions for encoder pulses
+def left_encoder_callback():
+    global left_pulses
+    left_pulses += 1
+    print(f"Left Encoder Pulse: {left_pulses}")
+
+def right_encoder_callback():
+    global right_pulses
+    right_pulses += 1
+    print(f"Right Encoder Pulse: {right_pulses}")
+
+# Attach callbacks
+left_encoder.when_pressed = left_encoder_callback
+right_encoder.when_pressed = right_encoder_callback
+
+# Distance calculation
+def calculate_average_distance(left_pulses, right_pulses):
+    """
+    Calculate average distance based on total left and right encoder pulses.
+    Equation: Distance (cm) = (Average Pulses / Pulses_per_Revolution) * Wheel_Circumference / 2
+    - Average Pulses: (left_pulses + right_pulses) / 2
+    - Pulses_per_Revolution: Number of pulses per wheel revolution (e.g., 20).
+    - Wheel_Circumference: Circumference of the wheel in cm (e.g., 50.8 cm).
+    - Division by 2: Accounts for robot kinematics or averaging.
+    """
+    average_pulses = (left_pulses + right_pulses) / 2
+    distance = (average_pulses / PULSES_PER_REVOLUTION) * WHEEL_CIRCUMFERENCE 
+    print(f"Total Left Pulses: {left_pulses}, Total Right Pulses: {right_pulses}")
+    print(f"Average Pulses: ({left_pulses} + {right_pulses}) / 2 = {average_pulses:.2f}")
+    print(f"Distance Calculation: ({average_pulses:.2f} / {PULSES_PER_REVOLUTION}) * {WHEEL_CIRCUMFERENCE} = {distance:.2f} cm")
+    return distance
+
+# Reset pulse counters
+def reset_pulses():
+    global left_pulses, right_pulses
+    left_pulses = 0
+    right_pulses = 0
+    print("Pulse counters reset: left_pulses = 0, right_pulses = 0")
+
+
+# Motor Control Functions
+def move_forward(distance, duty_cycle):
+    """Move forward a specified distance (cm) at given duty cycle (%)."""
+    reset_pulses()
+    IN1.on()
+    IN2.off()
+    IN3.on()
+    IN4.off()
+    ENA.value = duty_cycle / 100
+    ENB.value = duty_cycle / 100
+
+    # Use time-based movement for simplicity, since distance is calculated on stop
+    start_time = time.time()
+    estimated_time = (distance / 50)  # Rough estimate: 50 cm/s at 80% duty cycle
+    while time.time() - start_time < estimated_time:
+        print(f"Moving Forward - Left Pulses: {left_pulses}, Right Pulses: {right_pulses}")
+        time.sleep(0.01)
+
+    stop_motor()
+
+def turn_left(angle, duty_cycle):
+    """Turn left by a specified angle (degrees) at given duty cycle (%)."""
+    reset_pulses()
+    IN1.off()
+    IN2.on()
+    IN3.on()
+    IN4.off()
+    ENA.value = duty_cycle / 100
+    ENB.value = duty_cycle / 100
+
+    # Use time-based turning for simplicity
+    target_distance = (angle / 360) * ROBOT_TURN_CIRCUMFERENCE
+    estimated_time = (target_distance / 50)  # Rough estimate: 50 cm/s
+    start_time = time.time()
+    while time.time() - start_time < estimated_time:
+        print(f"Turning Left - Left Pulses: {left_pulses}, Right Pulses: {right_pulses}")
+        time.sleep(0.01)
+
+    stop_motor()
+
+def turn_right(angle, duty_cycle):
+    """Turn right by a specified angle (degrees) at given duty cycle (%)."""
+    reset_pulses()
+    IN1.on()
+    IN2.off()
+    IN3.off()
+    IN4.on()
+    ENA.value = duty_cycle / 100
+    ENB.value = duty_cycle / 100
+
+    # Use time-based turning for simplicity
+    target_distance = (angle / 360) * ROBOT_TURN_CIRCUMFERENCE
+    estimated_time = (target_distance / 50)  # Rough estimate: 50 cm/s
+    start_time = time.time()
+    while time.time() - start_time < estimated_time:
+        print(f"Turning Right - Left Pulses: {left_pulses}, Right Pulses: {right_pulses}")
+        time.sleep(0.01)
+
+    stop_motor()
+
+def stop_motor():
+    """Stop all motors and calculate total distance."""
+    global total_distance
+    IN1.off()
+    IN2.off()
+    IN3.off()
+    IN4.off()
+    ENA.value = 0
+    ENB.value = 0
+    # Calculate and update total distance when motors stop
+    if left_pulses > 0 or right_pulses > 0:  # Only calculate if movement occurred
+        distance = calculate_average_distance(left_pulses, right_pulses)
+        total_distance += distance
+        print(f"Total Distance Traveled: {total_distance:.2f} cm")
+
+def main():
+    """Main loop to test motor movements and distance calculation on stop."""
+    try:
+        print("Starting motor distance calculation test...")
+        # Test sequence: move forward, turn left, turn right, move forward
+        print("Moving forward 50 cm...")
+        move_forward(50, 80)
+        time.sleep(1)
+
+        
+
+    except KeyboardInterrupt:
+        print("Stopped by user")
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        stop_motor()
+        left_encoder.close()
+        right_encoder.close()
+        IN1.close()
+        IN2.close()
+        IN3.close()
+        IN4.close()
+        ENA.close()
+        ENB.close()
+        print(f"Cleanup complete. Final Distance Traveled: {total_distance:.2f} cm")
+
+if __name__ == "__main__":
+    main()
