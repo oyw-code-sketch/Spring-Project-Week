@@ -15,7 +15,7 @@ ENC_RIGHT = 6
 
 # Constants for distance calculation
 PULSES_PER_REVOLUTION = 20  # Adjust based on encoder specifications
-WHEEL_CIRCUMFERENCE = 50.8  # cm (adjust based on wheel diameter)
+WHEEL_CIRCUMFERENCE = 20.1  # cm (adjust based on wheel diameter)
 ROBOT_TURN_CIRCUMFERENCE = 150  # cm (adjust based on robot dimensions)
 
 # Pulse counters
@@ -44,14 +44,6 @@ right_encoder.when_pressed = right_encoder_callback
 
 # Distance calculation
 def calculate_average_distance(left_pulses, right_pulses):
-    """
-    Calculate average distance based on total left and right encoder pulses.
-    Equation: Distance (cm) = (Average Pulses / Pulses_per_Revolution) * Wheel_Circumference / 2
-    - Average Pulses: (left_pulses + right_pulses) / 2
-    - Pulses_per_Revolution: Number of pulses per wheel revolution (e.g., 20).
-    - Wheel_Circumference: Circumference of the wheel in cm (e.g., 50.8 cm).
-    - Division by 2: Accounts for robot kinematics or averaging.
-    """
     average_pulses = (left_pulses + right_pulses) / 2
     distance = (average_pulses / PULSES_PER_REVOLUTION) * WHEEL_CIRCUMFERENCE 
     print(f"Total Left Pulses: {left_pulses}, Total Right Pulses: {right_pulses}")
