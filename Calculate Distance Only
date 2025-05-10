@@ -143,8 +143,6 @@ def main():
         move_forward(50, 80)
         time.sleep(1)
 
-        
-
     except KeyboardInterrupt:
         print("Stopped by user")
     except Exception as e:
